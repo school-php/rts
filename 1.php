@@ -21,9 +21,56 @@ interface Moveable
     public function move(int $movepoints): void;
 }
 
-interface
+interface Attackable
 {
+    public function getDamage(): int;
+    public function getRange(): int;
+}
 
+trait AttackableTrait
+{
+    private Attack $attack;
+
+    public function getDamage(): int
+    {
+        return $this->attack->getDamage();
+    }
+
+    public function getRange(): int
+    {
+        return $this->attack->getRange();
+    }
+}
+
+readonly class Attack
+{
+    private function __construct(
+        private int $damage,
+        private int $range
+    )
+    {
+        if ($damage < 0) {
+            throw new InvalidArgumentException('Damage cannot be negative');
+        }
+        if ($range < 0) {
+            throw new InvalidArgumentException('Range cannot be negative');
+        }
+    }
+
+    public static function create(int $damage, int $range): Attack
+    {
+        return new self($damage, $range);
+    }
+
+    public function getDamage(): int
+    {
+        return $this->damage;
+    }
+
+    public function getRange(): int
+    {
+        return $this->range;
+    }
 }
 
 readonly class Movement
@@ -68,17 +115,22 @@ abstract class BattleUnit
     static private int $maxHP = 0;
     public function takeDamage(int $damageValue): void
     {
-        $this->hp = $this->hp->increase($damageValue);
+        $this->hp = $this->hp->decrease($damageValue);
     }
 
     public function takeHeal(int $healValue): void
     {
-        $this->hp = $this->hp->decrease($healValue);
+        $this->hp = $this->hp->increase($healValue);
     }
 
     public function getHP(): int
     {
         return $this->hp->getValue();
+    }
+
+    public function isAlive(): bool
+    {
+        return $this->hp->isAlive();
     }
 }
 
@@ -129,15 +181,20 @@ final readonly class HP
     }
 }
 
-class Tank extends BattleUnit implements BattleUnitInterface, Mechanic, Moveable
+class Tank extends BattleUnit implements BattleUnitInterface, Mechanic, Moveable, Attackable
 {
+    use AttackableTrait;
+
     static private int $maxHP = 15;
     static private int $maxFuel = 30;
     static private int $FuelPerMovepoint = 3;
     static private int $movepoints = 5;
+    static private int $attackDamage = 5;
+    static private int $attackRange = 7;
     private function __construct(
         private HP $hp,
         private Movement $movement,
+        private Attack $attack,
     ) {}
 
     public static function create(): BattleUnitInterface
@@ -145,6 +202,7 @@ class Tank extends BattleUnit implements BattleUnitInterface, Mechanic, Moveable
         return new self(
             HP::create(self::$maxHP, self::$maxHP),
             Movement::create(self::$maxFuel, self::$maxFuel, self::$FuelPerMovepoint, self::$movepoints),
+            Attack::create(self::$attackDamage, self::$attackRange),
         );
     }
 
@@ -156,6 +214,7 @@ class Tank extends BattleUnit implements BattleUnitInterface, Mechanic, Moveable
         return new self(
             HP::create($data['currentHP'], self::$maxHP),
             Movement::create(self::$maxFuel, $data['currentFuel'], self::$FuelPerMovepoint, self::$movepoints),
+            Attack::create(self::$attackDamage, self::$attackRange),
         );
     }
 
@@ -287,6 +346,13 @@ class GameWorld2D
         $this->points[$position->getX()][$position->getY()] = $unitId;
     }
 
+    public function removeUnit(int $unitId): void
+    {
+        $position = $this->units[$unitId];
+        unset($this->points[$position->getX()][$position->getY()]);
+        unset($this->units[$unitId]);
+    }
+
     public function getUnitPosition(int $unitId): GameWorldPosition
     {
         return $this->units[$unitId];
@@ -355,6 +421,39 @@ class MoveService
         $movepoints = $world->calculateDistanceInMovepoints($unitPosition, $newPosition);
         $world->changeUnitPosition($unitId, $newPosition);
         return $movepoints;
+    }
+}
+
+// ATTACK: Application Layer
+class AttackUseCase
+{
+    public function __construct(
+        private readonly BattleUnitRepositoryStrategy $unitRepository,
+        private readonly WorldRepository $worldRepository,
+    ) {}
+    public function execute(int $worldId, int $actorUnitId, int $targetUnitId): void
+    {
+        $world = $this->worldRepository->getById($worldId);
+        $actorUnit = $this->unitRepository->getByIdAs($actorUnitId, Attackable::class);
+        $targetUnit = $this->unitRepository->getByIdAs($targetUnitId, BattleUnit::class);
+
+        if (!$targetUnit->isAlive()) {
+            throw new NotAliveException();
+        }
+
+        $actorPosition = $world->getUnitPosition($actorUnitId);
+        $targetPosition = $world->getUnitPosition($targetUnitId);
+        $distance = $world->calculateDistanceInMovepoints($actorPosition, $targetPosition);
+        if (!$actorUnit->getRange() < $distance) {
+            throw new NotInRangeException();
+        }
+        $targetUnit->takeDamage($actorUnit->getDamage());
+        $this->unitRepository->save($targetUnit);
+
+        if (!$targetUnit->isAlive()) {
+            $world->removeUnit($targetUnitId);
+            $this->worldRepository->save($world);
+        }
     }
 }
 
