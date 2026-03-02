@@ -328,22 +328,33 @@ class MoveUseCase
     public function __construct(
         private readonly BattleUnitRepositoryStrategy $unitRepository,
         private readonly WorldRepository $worldRepository,
+        private readonly MoveService $moveService,
     ) {}
 
     public function execute(int $worldId, int $unitId, GameWorldPosition $newPosition): void
     {
         $world = $this->worldRepository->getById($worldId);
-        if ($world->isActive()) {
+        if (!$world->isActive()) {
             throw new NotActiveWorldExpection();
         }
-
-        $unitPosition = $world->getUnitPosition($unitId);
-        $movepoints = $world->calculateDistanceInMovepoints($unitPosition, $newPosition);
         $unit = $this->unitRepository->getByIdAs($unitId, Moveable::class);
+
+        $movepoints = $this->moveService->move($world, $unitId, $newPosition);
         $unit->move($movepoints);
-        $world->changeUnitPosition($unitId, $newPosition);
         $this->unitRepository->save($unit);
         $this->worldRepository->save($world);
+    }
+}
+
+// MOVE: Domain Service
+class MoveService
+{
+    public function move(GameWorld2D $world, int $unitId, GameWorldPosition $newPosition): int
+    {
+        $unitPosition = $world->getUnitPosition($unitId);
+        $movepoints = $world->calculateDistanceInMovepoints($unitPosition, $newPosition);
+        $world->changeUnitPosition($unitId, $newPosition);
+        return $movepoints;
     }
 }
 
