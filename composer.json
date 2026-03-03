@@ -1,0 +1,22 @@
+{
+    "name": "rts/app",
+    "description": "RTS PHP application",
+    "type": "project",
+    "require": {},
+    "require-dev": {
+        "phpstan/phpstan": "^1.0",
+        "squizlabs/php_codesniffer": "^3.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "App\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Tests\\": "tests/"
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}

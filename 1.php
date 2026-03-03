@@ -8,8 +8,12 @@ interface BattleUnitInterface
     public static function restoreFromData(array $data): BattleUnitInterface;
 }
 
-interface Mechanic {}
-interface Organic {}
+interface Mechanic
+{
+}
+interface Organic
+{
+}
 interface HealOrganic
 {
     public function heal(): void;
@@ -47,8 +51,7 @@ readonly class Attack
     private function __construct(
         private int $damage,
         private int $range
-    )
-    {
+    ) {
         if ($damage < 0) {
             throw new InvalidArgumentException('Damage cannot be negative');
         }
@@ -73,6 +76,116 @@ readonly class Attack
     }
 }
 
+interface Transportable
+{
+    public function getId(): string;
+    public function getWeight(): int;
+    public function setContainerId(int $containerId): void;
+    public function getContainerId(): int;
+    public function isInContainer(): bool;
+}
+
+interface Carrier
+{
+    public function canLoad(int $weight): bool;
+    public function load(int $unitId, int $weight): void;
+    public function unload(int $unitId): void;
+    /** @return array<string,int> unitId => weight */
+    public function getLoadedUnits(): array;
+}
+
+class Cargo
+{
+    private int $maxTotalWeight;
+    private int $maxUnitWeight;
+
+    /** @var array<string, int> unitId => weight */
+    private array $units = [];
+
+    public function __construct(int $maxTotalWeight, int $maxUnitWeight)
+    {
+        if ($maxTotalWeight <= 0 || $maxUnitWeight <= 0) {
+            throw new InvalidArgumentException("Weight limits must be positive");
+        }
+        $this->maxTotalWeight = $maxTotalWeight;
+        $this->maxUnitWeight = $maxUnitWeight;
+    }
+
+    public function canLoadUnit(int $unitId, int $weight): bool
+    {
+        return $weight <= $this->maxUnitWeight
+            && $this->getCurrentLoad() + $weight <= $this->maxTotalWeight;
+    }
+
+    public function loadUnit(int $unitId, int $weight): void
+    {
+        if (!$this->canLoadUnit($unitId, $weight)) {
+            throw new RuntimeException("Cannot load unit: weight exceeded");
+        }
+        $this->units[$unitId] = $weight;
+    }
+
+    public function unloadUnit(int $unitId): void
+    {
+        unset($this->units[$unitId]);
+    }
+
+    public function getCurrentLoad(): int
+    {
+        return array_sum($this->units);
+    }
+
+    public function getLoadedUnits(): array
+    {
+        return $this->units;
+    }
+
+    public function getMaxTotalWeight(): int
+    {
+        return $this->maxTotalWeight;
+    }
+
+    public function getMaxUnitWeight(): int
+    {
+        return $this->maxUnitWeight;
+    }
+}
+
+trait CargoTrait
+{
+    private Cargo $cargo;
+
+    public function canLoad(int $unitId, int $weight): bool
+    {
+        return $this->cargo->canLoadUnit($unitId, $weight);
+    }
+
+    public function load(Transportable $unit): void
+    {
+        $this->cargo->loadUnit($unit->getId(), $unit->getWeight());
+        $unit->setContainer($this);
+        $unit->addAttackBlockReason(AttackBlockReason::BLOCKED_BY_CONTAINER);
+    }
+
+    public function unload(Transportable $unit): void
+    {
+        $this->cargo->unloadUnit($unit->getId());
+        $unit->setContainer(null);
+        $unit->removeAttackBlockReason(AttackBlockReason::BLOCKED_BY_CONTAINER);
+    }
+
+    public function getCurrentLoad(): int
+    {
+        return $this->cargo->getCurrentLoad();
+    }
+
+    /** @return array<string,int> unitId => weight */
+    public function getLoadedUnits(): array
+    {
+        return $this->cargo->getLoadedUnits();
+    }
+}
+
 readonly class Movement
 {
     private function __construct(
@@ -80,7 +193,8 @@ readonly class Movement
         private int $currentFuel,
         private int $fuelPerMovepoint,
         private int $movepoints,
-    ) {}
+    ) {
+    }
 
     public static function create(int $maxFuel, int $currentFuel, int $fuelPerMovepoint, int $movepoints): Movement
     {
@@ -109,17 +223,37 @@ readonly class Movement
     }
 }
 
+enum AttackBlockReason: string
+{
+    case IN_CONTAINER = 'in_container';
+    case INVULNERABLE = 'invulnerable';
+}
+
 abstract class BattleUnit
 {
+    /** @var AttackBlockReason[] */
+    private array $attackableBlockReasons = [];
     private HP $hp;
-    static private int $maxHP = 0;
+    private static int $maxHP = 0;
     public function takeDamage(int $damageValue): void
     {
+        if (count($this->attackableBlockReasons)) {
+            throw new AttackableBlockException();
+        }
+
+        if (!$this->isAlive()) {
+            throw new NotAliveException();
+        }
+
         $this->hp = $this->hp->decrease($damageValue);
     }
 
     public function takeHeal(int $healValue): void
     {
+        if (!$this->isAlive()) {
+            throw new NotAliveException();
+        }
+
         $this->hp = $this->hp->increase($healValue);
     }
 
@@ -131,6 +265,16 @@ abstract class BattleUnit
     public function isAlive(): bool
     {
         return $this->hp->isAlive();
+    }
+
+    public function addAttackableBlockReason(AttackBlockReason $reason): void
+    {
+        $this->attackableBlockReasons[$reason->name] = $reason;
+    }
+
+    public function removeAttackableBlockReason(AttackBlockReason $reason): void
+    {
+        unset($this->attackableBlockReasons[$reason->name]);
     }
 }
 
@@ -185,17 +329,18 @@ class Tank extends BattleUnit implements BattleUnitInterface, Mechanic, Moveable
 {
     use AttackableTrait;
 
-    static private int $maxHP = 15;
-    static private int $maxFuel = 30;
-    static private int $FuelPerMovepoint = 3;
-    static private int $movepoints = 5;
-    static private int $attackDamage = 5;
-    static private int $attackRange = 7;
+    private static int $maxHP = 15;
+    private static int $maxFuel = 30;
+    private static int $FuelPerMovepoint = 3;
+    private static int $movepoints = 5;
+    private static int $attackDamage = 5;
+    private static int $attackRange = 7;
     private function __construct(
         private HP $hp,
         private Movement $movement,
         private Attack $attack,
-    ) {}
+    ) {
+    }
 
     public static function create(): BattleUnitInterface
     {
@@ -231,10 +376,11 @@ class Tank extends BattleUnit implements BattleUnitInterface, Mechanic, Moveable
 
 class Solder extends BattleUnit implements BattleUnitInterface, Organic
 {
-    static private int $maxHP = 15;
+    private static int $maxHP = 15;
     private function __construct(
         private HP $hp,
-    ) {}
+    ) {
+    }
     public static function create(): BattleUnitInterface
     {
         return new self(HP::Setup(self::$maxHP, self::$maxHP));
@@ -250,10 +396,11 @@ class Solder extends BattleUnit implements BattleUnitInterface, Organic
 
 class Medic extends BattleUnit implements BattleUnitInterface, HealOrganic
 {
-    static private int $maxHP = 15;
+    private static int $maxHP = 15;
     private function __construct(
         private HP $hp,
-    ) {}
+    ) {
+    }
     public static function create(): BattleUnitInterface
     {
         return new self(HP::create(self::$maxHP, self::$maxHP));
@@ -268,16 +415,16 @@ class Medic extends BattleUnit implements BattleUnitInterface, HealOrganic
 
     public function heal(): void
     {
-
     }
 }
 
 class BMP extends BattleUnit implements BattleUnitInterface, Mechanic
 {
-    static private int $maxHP = 15;
+    private static int $maxHP = 15;
     private function __construct(
         private HP $hp,
-    ) {}
+    ) {
+    }
     public static function create(): BattleUnitInterface
     {
         return new self(HP::Setup(self::$maxHP, self::$maxHP));
@@ -297,7 +444,8 @@ class GameWorldPosition
     private function __construct(
         private int $x,
         private int $y,
-    ) {}
+    ) {
+    }
 
     public static function create(int $x, int $y): GameWorldPosition
     {
@@ -322,7 +470,8 @@ class GameWorld2D
         private int $maxY,
         private array $units,
         private array $points,
-    ) {}
+    ) {
+    }
 
     public static function create($maxX = 100, $maxY = 100): GameWorld2D
     {
@@ -331,9 +480,10 @@ class GameWorld2D
 
     public static function restoreFromData(array $data): GameWorld2D
     {
-        if (!isset($data['maxX'], $data['maxY'], $data['units'], $data['points'])
-            || !is_array($data['units']) || !is_array($data['points']))
-        {
+        if (
+            !isset($data['maxX'], $data['maxY'], $data['units'], $data['points'])
+            || !is_array($data['units']) || !is_array($data['points'])
+        ) {
             throw new InvalidArgumentException();
         }
 
@@ -395,7 +545,8 @@ class MoveUseCase
         private readonly BattleUnitRepositoryStrategy $unitRepository,
         private readonly WorldRepository $worldRepository,
         private readonly MoveService $moveService,
-    ) {}
+    ) {
+    }
 
     public function execute(int $worldId, int $unitId, GameWorldPosition $newPosition): void
     {
@@ -430,7 +581,8 @@ class AttackUseCase
     public function __construct(
         private readonly BattleUnitRepositoryStrategy $unitRepository,
         private readonly WorldRepository $worldRepository,
-    ) {}
+    ) {
+    }
     public function execute(int $worldId, int $actorUnitId, int $targetUnitId): void
     {
         $world = $this->worldRepository->getById($worldId);
@@ -463,7 +615,8 @@ class HealUseCase
     public function __construct(
         private readonly HealService $healService,
         private readonly BattleUnitRepositoryStrategy $repository,
-    ) {}
+    ) {
+    }
 
     public function execute(int $actorUnitId, int $targetUnitId, int $healValue): void
     {
@@ -537,7 +690,6 @@ class WorldRepository
 
     public function save(GameWorld2D $world): void
     {
-
     }
 }
 
@@ -545,7 +697,8 @@ class UnitFactory
 {
     public function __construct(
         private array $mapping // Наш внешний конфиг
-    ) {}
+    ) {
+    }
 
     public function create(array $data): Unit
     {
@@ -566,7 +719,8 @@ readonly class CargoManifest
     public function __construct(
         private int $maxCapacity,
         private array $passengerWeights = []
-    ) {}
+    ) {
+    }
 
     public function add(int $unitId, int $weight): self
     {
